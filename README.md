@@ -1,20 +1,16 @@
 # Edge Infrastructure Platform (EIP)
 
-Open-source network management software. Install on one device, manage your network from there.
+Network management software for private infrastructure. One device runs the control plane, everything else is managed from there.
 
-EIP is a working multi-node infrastructure with a web control surface, built fundamentals-first — no Docker, no Kubernetes, no Nginx. The design principle is resource discipline: minimum overhead, maximum capability per watt, per dollar, per line of code. Every architectural decision is grounded in the CIA triad (confidentiality, integrity, availability) as engineering discipline, not marketing language.
-
-**Current state:** Three-node mesh network with centralized control plane, automated operations, and redundant storage. Phase 1 is a documented, working system with defensible design rationale.
+Three-node mesh. Web control surface. Redundant storage. Automated operations. No Docker, no Kubernetes, no Nginx — just the fundamentals, kept lean.
 
 ---
 
-## Why This Exists
+## What It Is
 
-Most homelab projects skip straight to orchestration tooling — Docker Compose files, Ansible playbooks, Terraform configs — without understanding what those tools abstract away. EIP goes the other direction: build the fundamentals by hand, understand exactly what each layer does, then decide what's worth abstracting.
+EIP manages devices on a private network from a single control plane. Wake machines, check status, push backups — all from one interface over an encrypted mesh.
 
-But this isn't just an exercise in learning primitives. The deeper constraint is resource discipline — getting the most out of every component by understanding what it actually needs to do and refusing to over-provision. A 5W Pi running the control plane instead of a full server. On-demand compute that sleeps when idle. Delta-only backups over network mounts. No tool introduced until the problem it solves actually exists. The goal is a system where nothing is wasted and everything is justified.
-
-The long-term vision is a downloadable application: install it on one device and that device becomes your network control plane. Today it's the working foundation for that.
+It runs on commodity hardware. The control plane is a Raspberry Pi drawing 5 watts. The compute node sleeps until it's needed. Nothing runs that doesn't have to.
 
 ---
 
@@ -40,113 +36,96 @@ The long-term vision is a downloadable application: install it on one device and
          LAN: 192.168.4.0/24 · Tailscale + MagicDNS
 ```
 
-Three nodes, each with a clear role:
+**Pi** — Always on. Runs the Flask API, systemd service, status monitoring, WoL dispatch. 5W idle.
 
-- **Pi (rasplient)** — Always-on edge node running the control plane. Draws ~5W, stays up 24/7. Runs Flask API, systemd service, status monitoring, and Wake-on-LAN dispatch.
-- **Hub** — Compute node with RAID1 storage. Sleeps until needed, wakes on demand via WoL. Hosts redundant storage (4TB mirrored CMR drives) and serves as RDP target for remote work.
-- **Laptop** — Operator workstation. Runs scheduled backup scripts and on-demand commands. All automation scripts follow a shared-config pattern for consistency.
+**Hub** — Sleeps by default. RAID1 storage (4TB mirrored CMR), SMB shares, RDP target. Wakes on demand.
+
+**Laptop** — Operator. Runs scheduled backups and on-demand scripts. All scripts source a shared config file.
 
 ---
 
 ## Design Decisions
 
-This is the section that matters. Every choice below optimizes for the same thing: maximum capability from minimum resources, with every layer understood and justified.
+### Tailscale as trust boundary
 
-### Tailscale as trust boundary — not just convenience
+All traffic runs over the Tailscale mesh. No ports exposed to the internet. No firewall rules to maintain. No reverse proxy. No cert renewal.
 
-**Decision:** All inter-node communication runs over Tailscale's WireGuard mesh. No ports exposed to the public internet. No firewall rules to maintain.
+The alternative is Nginx/Caddy with Let's Encrypt and manual firewall management. That's a lot of surface area to maintain for a private network. Tailscale reduces the security question to one thing: is this device in the mesh or not.
 
-**Why:** The conventional homelab approach is to expose services via reverse proxy (Nginx/Caddy) with Let's Encrypt certs and firewall rules. That creates a large attack surface that requires ongoing maintenance — certificate renewal, firewall auditing, port management. Tailscale collapses this to a single trust decision: is this device in the mesh? If yes, it can communicate. If no, it can't. The network boundary *is* the security boundary.
+Services aren't publicly accessible. That's intentional. Public exposure is a separate problem for later.
 
-**Tradeoff acknowledged:** This means EIP services aren't publicly accessible. That's intentional for Phase 1 — the control plane manages a private network, not a public one. Public exposure is a Phase 2+ concern and will be handled as a deliberate extension, not a default.
+### No containers
 
-### No containers, no orchestration — fundamentals first
+Flask runs directly under systemd on the Pi. No Docker, no container runtime.
 
-**Decision:** Flask runs directly on the Pi under systemd. No Docker, no container runtime, no orchestrator.
+Containers add a runtime, image storage, and network bridging. On a Pi, that overhead matters. More importantly, none of the problems containers solve — dependency isolation, reproducible deploys, horizontal scaling — exist here yet. Each node has one job.
 
-**Why:** Containers solve real problems — dependency isolation, reproducible deploys, horizontal scaling. None of those problems exist yet in a three-node network where each node has a single role. Introducing Docker here would add a layer of abstraction that hides the actual operating system mechanics: process management, service lifecycle, networking, file permissions. It would also add resource overhead — a container runtime, image storage, network bridging — on a Pi where every megabyte of RAM matters. Understanding the mechanics *and* keeping the system lean are the same goal here.
-
-**When this changes:** When EIP needs multi-service orchestration on a single node, or when deployment reproducibility becomes a bottleneck. The architecture is designed so containerization is an additive change, not a rewrite.
+This changes when multi-service orchestration on a single node becomes necessary. The architecture doesn't prevent it.
 
 ### Wake-on-LAN over always-on compute
 
-**Decision:** The Hub sleeps by default and wakes on demand via WoL packets dispatched from the Pi.
+The Hub draws 80-150W under load. Running that 24/7 for occasional use is wasteful. The Pi sends a WoL packet, the Hub is up in ~15 seconds, and it goes back to sleep when it's done.
 
-**Why:** A desktop-class machine drawing 80-150W 24/7 to serve occasional compute and storage requests is wasteful and shortens hardware life. WoL lets the Pi (5W, always-on) act as the gatekeeper. The Hub is available in ~15 seconds when needed and consuming zero power when it's not.
+The Flask API exposes `/wake`. Automation scripts call it, poll `/api/status/hub` until the Hub responds, then proceed. Wake, wait, act. Every Hub-dependent operation follows this pattern.
 
-**Implementation:** The Pi's Flask API exposes a `/wake` endpoint. The laptop's automation scripts call this endpoint, then poll the Hub's status until it's online before proceeding. This pattern — wake, wait, act — is reused across all Hub-dependent operations.
+### RAID1 with CMR drives
 
-### RAID1 with CMR drives — integrity over capacity
+Two 4TB CMR drives in mirror. Lose one, the other has a complete copy.
 
-**Decision:** Hub storage is two 4TB CMR (Conventional Magnetic Recording) drives in RAID1 (mirror).
+CMR over SMR because SMR write performance degrades unpredictably during rebuilds — which is the worst time for unpredictable performance. 4TB usable from 8TB raw. The tradeoff is capacity for simplicity and reliability.
 
-**Why:** RAID1 was chosen over RAID5/RAID0 because the failure mode is simple and recoverable — lose one drive, the other has a complete copy. CMR drives were chosen over SMR (Shingled Magnetic Recording) because SMR drives have unpredictable write performance during RAID rebuilds, which is exactly when you need predictable performance most. The capacity tradeoff (4TB usable from 8TB raw) is acceptable because the use case is critical data redundancy, not bulk storage.
+### Shared config pattern
 
-### Shared-config script pattern
+Every script on the laptop sources `eip_config.bat` — one file with all connection details (hosts, IPs, paths, credentials). Without it, updating a single Tailscale IP means editing every script. With it, one file is the source of truth.
 
-**Decision:** All automation scripts on the laptop source a single `eip_config.bat` file for shared state (hostnames, IP addresses, credentials, paths).
+Scripts:
+- `eip_config.bat` — shared state
+- `wake_and_rdp.bat` — wake Hub, launch Remote Desktop
+- `wake_and_backup.bat` — wake Hub, robocopy Obsidian vault to RAID1
 
-**Why:** Without this, every script hardcodes its own copy of connection details. That means updating a Tailscale IP requires editing every script individually — a maintenance burden that scales linearly with the number of scripts. The shared-config pattern means one file is the source of truth. Each script is a function that calls it.
+### Automated nightly backup
 
-**Scripts:**
-- `eip_config.bat` — shared configuration (PI_USER, PI_HOST, WAKE_CMD, RDP_HOST, etc.)
-- `wake_and_rdp.bat` — wakes Hub + launches Remote Desktop
-- `wake_and_backup.bat` — wakes Hub + runs robocopy mirror of Obsidian vault to RAID1
-
-### Automated backup via scheduled task
-
-**Decision:** Nightly midnight backup of Obsidian vault from laptop to Hub's RAID1 storage, scheduled via `schtasks`.
-
-**Why:** Manual backups don't happen. The backup runs robocopy in mirror mode over the network mount, which means it only transfers changes — fast, incremental, and idempotent. The script handles the full lifecycle: wake the Hub (via Pi), wait for it to come online, run the backup, done. No human in the loop.
+Midnight. Robocopy mirror mode — only deltas transfer. Script wakes the Hub via Pi, waits for it to come online, runs the backup. Scheduled via `schtasks`. No human required.
 
 ---
 
 ## Stack
 
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| Mesh network | Tailscale (WireGuard) | Encrypted overlay, zero-config DNS, no exposed ports |
-| Control plane | Flask + Python | Lightweight, single-file API, no framework overhead |
-| Process management | systemd | OS-native, handles restart/logging/dependencies |
-| Status monitoring | `nc -z` (netcat) | Minimal — TCP port check, no agent required on targets |
-| Storage | RAID1, mdadm, SMB | Mirror redundancy, standard Linux tooling, network-accessible |
-| Remote access | RDP + Tailscale | Native Windows protocol over encrypted mesh |
-| Automation | Batch scripts + schtasks | Native Windows scheduling, no external dependencies |
-| Wake-on-LAN | Python + `wakeonlan` | Two-line implementation, dispatched from Pi |
+| Layer | Tool | Reason |
+|-------|------|--------|
+| Network | Tailscale (WireGuard) | Encrypted mesh, no exposed ports |
+| Control plane | Flask | Single-file API, minimal |
+| Process mgmt | systemd | OS-native lifecycle management |
+| Monitoring | `nc -z` | TCP probe, no agent on targets |
+| Storage | RAID1 / mdadm / SMB | Mirror redundancy, network-accessible |
+| Remote access | RDP over Tailscale | Native protocol, encrypted transport |
+| Automation | Batch + schtasks | OS-native, no dependencies |
+| WoL | Python + wakeonlan | Two lines of code |
 
 ---
 
 ## API
 
-The Pi exposes a minimal Flask API:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/status/hub` | GET | Returns Hub online/offline status via TCP probe |
-| `/wake` | POST | Sends WoL magic packet to Hub |
-
-The web UI at the Pi's address provides a control panel for status monitoring and wake operations.
+| Endpoint | Method | What it does |
+|----------|--------|--------------|
+| `/api/status/hub` | GET | TCP probe — is the Hub online |
+| `/wake` | POST | Send WoL magic packet to Hub |
 
 ---
 
-## Project Status
+## Status
 
-**Phase 1 (current):** Working multi-node infrastructure with documented design rationale. This is the portfolio milestone — the system works, the decisions are defensible, the documentation tells the story.
+**Phase 1 (now):** Working system, documented decisions. Portfolio state.
 
-**Phase 2 (planned):** Modularize — reproducible architecture, swappable components, declarative configuration.
+**Phase 2:** Modularize. Reproducible architecture, swappable components, declarative config.
 
-**Phase 3 (vision):** Downloadable application — install on one device, manage your network from there.
+**Phase 3:** Downloadable app. Install on one device, manage everything from there.
 
 ---
 
-## What's Not Here (Yet)
+## What's Not Here
 
-Transparency about scope is as important as what's built:
-
-- **No container orchestration** — deliberate, not deferred. See [design decisions](#no-containers-no-orchestration--fundamentals-first).
-- **No public service exposure** — the trust boundary is the mesh. Public-facing services are a Phase 2 concern.
-- **No CI/CD** — the deployment target is a single Pi. `scp` and `systemctl restart` is the deploy process. CI/CD overhead isn't justified until there are multiple services or contributors.
-- **No monitoring/alerting stack** — status checks are synchronous via the API. Prometheus/Grafana is overkill for three nodes. If the Pi is down, the control plane is down, and I'll know.
+No containers — [by design](#no-containers). No public endpoints — the mesh is the boundary. No CI/CD — deploy target is one Pi, `scp` and `systemctl restart` is the process. No Prometheus — three nodes don't need a monitoring stack.
 
 ---
 
