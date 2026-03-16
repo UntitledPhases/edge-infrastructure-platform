@@ -18,22 +18,22 @@ It runs on commodity hardware. The control plane is a Raspberry Pi drawing 5 wat
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                   Tailscale Mesh (WireGuard)             │
-│                   Trust boundary for all traffic         │
-│                                                          │
-│  ┌──────────────-┐  ┌─────────────-─┐  ┌──────────────┐  │
-│  │  Pi (Edge)    │  │  Hub (Compute)│  │   Laptop     │  │
-│  │  Always-on    │  │  On-demand    │  │  (Operator)  │  │
-│  │  Control plane│  │  Wakes via WoL│  │              │  │
-│  │               │  │               │  │              │  │
-│  │  Flask API    │  │  RAID1 (4TB)  │  │  Scripts/    │  │
-│  │  systemd svc  │  │  SMB shares   │  │  Scheduled   │  │
-│  │  Status mon.  │  │  RDP target   │  │  backups     │  │
-│  │  WoL dispatch │  │               │  │              │  │
-│  └──────────────┘   └──────────────┘   └──────────────┘  │
-│   100.66.29.15       100.112.94.2       100.67.141.87    │
+│                    Tailscale Mesh (WireGuard)           │
+│                    Trust boundary for all traffic       │
+│                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │  Pi (Edge)   │  │ Hub (Compute)│  │    Laptop    │   │
+│  │  Always-on   │  │  On-demand   │  │  (Operator)  │   │
+│  │ Control plane│  │ Wakes via WoL│  │              │   │
+│  │              │  │              │  │              │   │
+│  │  Flask API   │  │  RAID1 (4TB) │  │  Scripts/    │   │
+│  │  systemd svc │  │  SMB shares  │  │  Scheduled   │   │
+│  │  Status mon. │  │  RDP target  │  │  backups     │   │
+│  │  WoL dispatch│  │              │  │              │   │
+│  └──────────────┘  └──────────────┘  └──────────────┘   │
+│   100.66.29.15      100.112.94.2      100.67.141.87     │
 └─────────────────────────────────────────────────────────┘
-         LAN: 192.168.4.0/24 · Tailscale + MagicDNS
+          LAN: 192.168.4.0/24 · Tailscale + MagicDNS
 ```
 
 **Pi** — Always on. Runs the Flask API, systemd service, status monitoring, WoL dispatch. 5W idle.
