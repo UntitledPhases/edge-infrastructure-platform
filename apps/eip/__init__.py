@@ -42,7 +42,7 @@ _TEMPLATE = """
 
 
 def _hub_host() -> str:
-    return os.environ.get("EIP_HUB_HOST", "hub.taildbe427.ts.net")
+    return os.environ.get("EIP_HUB_HOST", "hub.tailnet.example")
 
 
 def _hub_port() -> int:

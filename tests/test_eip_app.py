@@ -41,6 +41,13 @@ class EipAppTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["status"], "OFFLINE")
 
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("apps.eip.probe_tcp", return_value=False)
+    def test_hub_status_uses_example_default_host(self, _probe):
+        response = create_app().test_client().get("/eip/api/status/hub")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["host"], "hub.tailnet.example")
+
     @patch("apps.eip.subprocess.run")
     def test_wake_uses_configured_command(self, run):
         run.return_value.stdout = "sent"
