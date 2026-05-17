@@ -1,0 +1,6 @@
+{
+  "name": "EIP Control",
+  "url_prefix": "/eip",
+  "description": "Wake-on-LAN and hub status monitoring",
+  "version": "1.0.0"
+}

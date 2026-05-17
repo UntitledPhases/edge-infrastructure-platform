@@ -12,6 +12,19 @@ EIP manages devices on a private network from a single control plane. Wake machi
 
 It runs on commodity hardware. The control plane is a Raspberry Pi drawing 5 watts. The compute node sleeps until it's needed. Nothing runs that doesn't have to.
 
+## Current V1
+
+This repository now contains the runnable control-plane service for the EIP V1 slice:
+
+- `GET /health` — service health and registered app metadata
+- `GET /eip/api/status/hub` — TCP probe for the Hub RDP endpoint
+- `POST /eip/wake` — execute the configured Wake-on-LAN command
+- minimal web UI at `/eip/`
+- systemd unit template for Raspberry Pi deployment
+- tests for the Flask app, status probe route, and wake command wiring
+
+Smart Mirror and other dashboard modules are separate projects. EIP V1 stays focused on private infrastructure control.
+
 ---
 
 ## Architecture
@@ -31,9 +44,9 @@ It runs on commodity hardware. The control plane is a Raspberry Pi drawing 5 wat
 │  │  Status mon. │  │  RDP target  │  │  backups     │   │
 │  │  WoL dispatch│  │              │  │              │   │
 │  └──────────────┘  └──────────────┘  └──────────────┘   │
-│   100.66.29.15      100.112.94.2      100.67.141.87     │
+│   tailnet: edge     tailnet: hub       tailnet: laptop   │
 └─────────────────────────────────────────────────────────┘
-          LAN: 192.168.4.0/24 · Tailscale + MagicDNS
+              Private LAN · Tailscale + MagicDNS
 ```
 
 **Pi** — Always on. Runs the Flask API, systemd service, status monitoring, WoL dispatch. 5W idle.
@@ -94,13 +107,76 @@ Midnight. Robocopy mirror mode — only deltas transfer. Script wakes the Hub vi
 | Layer | Tool | Reason |
 |-------|------|--------|
 | Network | Tailscale (WireGuard) | Encrypted mesh, no exposed ports |
-| Control plane | Flask | Single-file API, minimal |
+| Control plane | Flask | Small API/UI surface, easy Pi deployment |
 | Process mgmt | systemd | OS-native lifecycle management |
-| Monitoring | `nc -z` | TCP probe, no agent on targets |
+| Monitoring | Python TCP probe | No agent required on targets |
 | Storage | RAID1 / mdadm / SMB | Mirror redundancy, network-accessible |
 | Remote access | RDP over Tailscale | Native protocol, encrypted transport |
 | Automation | Batch + schtasks | OS-native, no dependencies |
-| WoL | Python + wakeonlan | Two lines of code |
+| WoL | Configured local command | Keeps packet dispatch swappable |
+
+---
+
+## Repository Structure
+
+```text
+server.py                 Flask app factory and process entry point
+apps/eip/                 Wake/status Blueprint
+tests/                    Unit tests for the V1 control plane
+.env.example              Example runtime configuration
+eip-platform.service      systemd unit template for Pi deployment
+docs/                     Design notes and versioned architecture docs
+```
+
+---
+
+## Setup
+
+Create a virtual environment and install dependencies:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Create local config:
+
+```bash
+cp .env.example .env
+```
+
+Update `.env` for the actual hub host, port, timeout, and Wake-on-LAN command.
+
+Run locally:
+
+```bash
+python server.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5000/health
+http://127.0.0.1:5000/eip/
+http://127.0.0.1:5000/eip/api/status/hub
+```
+
+---
+
+## Configuration
+
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `EIP_HOST` | Flask bind host | `0.0.0.0` |
+| `EIP_PORT` | Flask bind port | `5000` |
+| `EIP_DEBUG` | Enable Flask debug mode | `false` |
+| `EIP_HUB_HOST` | Hub hostname or Tailscale MagicDNS name | `hub.tailnet.ts.net` |
+| `EIP_HUB_PORT` | Hub status probe port | `3389` |
+| `EIP_STATUS_TIMEOUT` | TCP probe timeout in seconds | `2` |
+| `EIP_WAKE_COMMAND` | Local command used to wake the Hub | `wakepc hub` |
+
+Secrets and machine-specific values belong in `.env`, never in committed files.
 
 ---
 
@@ -108,14 +184,59 @@ Midnight. Robocopy mirror mode — only deltas transfer. Script wakes the Hub vi
 
 | Endpoint | Method | What it does |
 |----------|--------|--------------|
-| `/api/status/hub` | GET | TCP probe — is the Hub online |
-| `/wake` | POST | Send WoL magic packet to Hub |
+| `/health` | GET | Service health and registered app metadata |
+| `/eip/api/status/hub` | GET | TCP probe — is the Hub online |
+| `/eip/wake` | POST | Execute the configured Wake-on-LAN command |
+
+Example status response:
+
+```json
+{
+  "target": "hub",
+  "host": "hub.tailnet.ts.net",
+  "port": 3389,
+  "status": "ONLINE",
+  "timestamp": "2026-05-17T16:00:00+00:00"
+}
+```
+
+---
+
+## Testing
+
+Run the test suite:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The tests mock network probes and wake-command execution. They verify the app wiring and command boundaries without sending real magic packets.
+
+---
+
+## Raspberry Pi Deployment
+
+One intended deployment shape is `/opt/eip` on the Pi:
+
+```bash
+sudo mkdir -p /opt/eip
+sudo cp -r . /opt/eip
+cd /opt/eip
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+sudo cp eip-platform.service /etc/systemd/system/eip-platform.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now eip-platform
+```
+
+Adjust `eip-platform.service` and `.env` for the actual deployment path and wake command.
 
 ---
 
 ## Status
 
-**Phase 1 (now):** Working system, documented decisions. Portfolio state.
+**Phase 1 (now):** Working V1 control plane: hub status, wake action, health endpoint, systemd template, tests, and documented architecture.
 
 **Phase 2:** Modularize. Reproducible architecture, swappable components, declarative config.
 
@@ -125,7 +246,7 @@ Midnight. Robocopy mirror mode — only deltas transfer. Script wakes the Hub vi
 
 ## What's Not Here
 
-No containers — [by design](#no-containers). No public endpoints — the mesh is the boundary. No CI/CD — deploy target is one Pi, `scp` and `systemctl restart` is the process. No Prometheus — three nodes don't need a monitoring stack.
+No containers — [by design](#no-containers). No public endpoints — the mesh is the boundary. No Prometheus — three nodes don't need a monitoring stack. No Smart Mirror code — that is a separate project.
 
 ---
 
