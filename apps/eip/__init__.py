@@ -1,44 +1,17 @@
-"""Wake-on-LAN and hub status routes for EIP."""
+"""Wake-on-LAN, hub status, and operator dashboard routes for EIP."""
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timezone
 import os
-import shlex
 import socket
-import subprocess
 
-from flask import Blueprint, jsonify, render_template_string
+from flask import Blueprint, jsonify, render_template
 
-bp = Blueprint("eip", __name__)
+from .actions import configured_actions, find_action, run_action
 
-_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>EIP Control</title>
-  <style>
-    body { background: #111; color: #e5e7eb; font-family: system-ui, sans-serif; margin: 0; padding: 2rem; }
-    main { max-width: 720px; }
-    button { background: #e5e7eb; border: 0; border-radius: 4px; color: #111; cursor: pointer; padding: 0.6rem 1rem; }
-    pre { background: #1f2937; border-radius: 6px; overflow: auto; padding: 1rem; white-space: pre-wrap; }
-    a { color: #93c5fd; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Edge Infrastructure Platform</h1>
-    <p>Private control plane for hub status and Wake-on-LAN.</p>
-    <p><a href="{{ url_for('eip.hub_status') }}">Hub status JSON</a></p>
-    <form method="post" action="{{ url_for('eip.wake') }}">
-      <button type="submit">Wake Hub</button>
-    </form>
-    {% if output %}<pre>{{ output }}</pre>{% endif %}
-  </main>
-</body>
-</html>
-"""
+bp = Blueprint("eip", __name__, template_folder="templates")
 
 
 def _hub_host() -> str:
@@ -53,11 +26,6 @@ def _status_timeout() -> float:
     return float(os.environ.get("EIP_STATUS_TIMEOUT", "2"))
 
 
-def _wake_command() -> list[str]:
-    command = os.environ.get("EIP_WAKE_COMMAND", "wakepc hub")
-    return shlex.split(command)
-
-
 def probe_tcp(host: str, port: int, timeout: float) -> bool:
     """Return True when a TCP connection can be established."""
     try:
@@ -67,37 +35,60 @@ def probe_tcp(host: str, port: int, timeout: float) -> bool:
         return False
 
 
+def hub_status_payload() -> dict:
+    online = probe_tcp(_hub_host(), _hub_port(), _status_timeout())
+    return {
+        "target": "hub",
+        "host": _hub_host(),
+        "port": _hub_port(),
+        "status": "ONLINE" if online else "OFFLINE",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _actions_by_group() -> dict[str, list[dict]]:
+    groups = defaultdict(list)
+    for action in configured_actions():
+        groups[action.group].append(action.public())
+    return dict(groups)
+
+
 @bp.get("/")
 def index():
-    return render_template_string(_TEMPLATE, output=None)
+    return render_template(
+        "eip/dashboard.html",
+        actions_by_group=_actions_by_group(),
+        status=hub_status_payload(),
+        output=None,
+    )
 
 
 @bp.get("/api/status/hub")
 def hub_status():
-    online = probe_tcp(_hub_host(), _hub_port(), _status_timeout())
-    return jsonify(
-        {
-            "target": "hub",
-            "host": _hub_host(),
-            "port": _hub_port(),
-            "status": "ONLINE" if online else "OFFLINE",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    return jsonify(hub_status_payload())
+
+
+@bp.get("/api/actions")
+def actions():
+    return jsonify({"actions": [action.public() for action in configured_actions()]})
+
+
+@bp.post("/api/actions/<action_id>")
+def action(action_id: str):
+    selected = find_action(action_id)
+    if selected is None:
+        return jsonify({"error": "unknown action"}), 404
+    status_code = 200 if selected.available else 409
+    return jsonify(run_action(selected)), status_code
 
 
 @bp.post("/wake")
 def wake():
-    try:
-        result = subprocess.run(
-            _wake_command(),
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        output = (result.stdout or "") + (result.stderr or "")
-        output = output.strip() or f"Wake command exited with {result.returncode}."
-    except Exception as exc:  # command missing, timeout, or local execution failure
-        output = str(exc)
-    return render_template_string(_TEMPLATE, output=output)
+    selected = find_action("wake-hub")
+    result = run_action(selected)
+    return render_template(
+        "eip/dashboard.html",
+        actions_by_group=_actions_by_group(),
+        status=hub_status_payload(),
+        output=result["output"],
+    )
