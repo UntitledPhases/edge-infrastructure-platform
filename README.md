@@ -19,7 +19,8 @@ This repository now contains the runnable control-plane service for the EIP V1 s
 - `GET /health` — service health and registered app metadata
 - `GET /eip/api/status/hub` — TCP probe for the Hub RDP endpoint
 - `POST /eip/wake` — execute the configured Wake-on-LAN command
-- minimal web UI at `/eip/`
+- operator dashboard at `/eip/`
+- allowlisted action endpoints for local operator scripts
 - systemd unit template for Raspberry Pi deployment
 - tests for the Flask app, status probe route, and wake command wiring
 
@@ -121,7 +122,7 @@ Midnight. Robocopy mirror mode — only deltas transfer. Script wakes the Hub vi
 
 ```text
 server.py                 Flask app factory and process entry point
-apps/eip/                 Wake/status Blueprint
+apps/eip/                 Dashboard, Wake/status Blueprint, action registry
 tests/                    Unit tests for the V1 control plane
 .env.example              Example runtime configuration
 eip-platform.service      systemd unit template for Pi deployment
@@ -175,6 +176,9 @@ http://127.0.0.1:5000/eip/api/status/hub
 | `EIP_HUB_PORT` | Hub status probe port | `3389` |
 | `EIP_STATUS_TIMEOUT` | TCP probe timeout in seconds | `2` |
 | `EIP_WAKE_COMMAND` | Local command used to wake the Hub | `wakepc hub` |
+| `EIP_RDP_HOST` | Host passed to `mstsc.exe` from the dashboard | `hub` |
+| `EIP_WAKE_RDP_SCRIPT` | Optional Windows script path for the Wake + RDP button | `C:\Users\you\Scripts\wake_and_rdp.bat` |
+| `EIP_WAKE_BACKUP_SCRIPT` | Optional Windows script path for the Wake + Backup button | `C:\Users\you\Scripts\wake_and_backup.bat` |
 
 Secrets and machine-specific values belong in `.env`, never in committed files.
 
@@ -186,6 +190,8 @@ Secrets and machine-specific values belong in `.env`, never in committed files.
 |----------|--------|--------------|
 | `/health` | GET | Service health and registered app metadata |
 | `/eip/api/status/hub` | GET | TCP probe — is the Hub online |
+| `/eip/api/actions` | GET | Dashboard action metadata |
+| `/eip/api/actions/<action_id>` | POST | Run an allowlisted dashboard action |
 | `/eip/wake` | POST | Execute the configured Wake-on-LAN command |
 
 Example status response:
